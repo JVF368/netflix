@@ -1,0 +1,640 @@
+---
+title: "_Data wrangling_ y _EDA_ del _data set_ de Netflix"
+author: "Manel Hoffmann Quintana, Joaquín Martín Castillo y Jordi Vanrell Forteza"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: tactile
+    highlight: github
+---
+
+![](netflix-logo21.png)
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r setup,include=FALSE}
+rm(list=ls())
+knitr::opts_chunk$set(echo = FALSE, cache=FALSE, message=FALSE, warning = FALSE)
+
+# Para compilar correctamente este documento es necesario tener instalado el
+# paquete prettydoc (colo cabe compilar en html):
+#install.packages("prettydoc")
+library(prettydoc)
+#install.packages("tidyverse")
+library(tidyverse)
+#install.packages("kableExtra")
+library(kableExtra)
+```
+
+# Primera parte: Contexto y datos
+
+## Contexto y fuente de los datos
+
+Los datos de partida proceden de una competición de [Kaggle](https://www.kaggle.com/netflix-inc/netflix-prize-data) encaminada a emular, con los mismos datos, el concurso abierto para el sistema de recomendación de películas de **Netflix**.
+
+Los ficheros suministrados son los que siguen:
+
+* `movie_titles.csv`, un directorio de los títulos, años de estreno y códigos numéricos de las 17770 películas disponibles.
+
+* 4 ficheros `.txt` con el formato `combined_data_X.txt`, que incluyen las puntuaciones de los usuarios (codificados con un número) y la fecha en que se emitieron para cada película. Estos cuatro archivos contendrían la información necesaria para modelizar el sistema de recomendaciones, aunque aquí su uso se limitará al análisis descriptivo.
+
+* `probe.txt` y `qualifying.txt`, útiles únicamente para testar un sistema de recomendación. Se obviarán porque este no es el objeto del presente estudio.
+
+## Tratamiento de datos
+
+Los ficheros `combined_data_X.txt` se presentan con una estructura casi rectangular. Tras una fila inicial con el código de la película seguido de **:** se listan el código de cada cliente, su puntuación a esa película y la fecha en que se emitió la valoración.
+
+```{r primera_lectura}
+knitr::kable(read.table("netflix/combined_data_1.txt", nrows = 3), 
+             caption = '<font size="+2"><p style="color:black;"><b>Tabla 1: Estructura</b></p></font>')
+```
+
+El primer objetivo de la manipulación de las tablas es conseguir una verdadera estructura rectangular, estableciendo el código de la película como una variable más para cada valoración emitida (y descartando luego las filas donde figuraban los códigos de las películas).
+
+A continuación, y de acuerdo con las indicaciones dadas en el enunciado de este taller, se extrae una muestra de 250 películas al azar de los ficheros `combined_data_X.txt`. La semilla aleatoria se establece en 247177.
+```{python librerias, cache=TRUE}
+# Librerías necesarias
+import pandas as pd
+import numpy as np
+import random as rd
+```
+```{python bucle_lectura, cache=TRUE}
+colnames = ['ID_user', 'Score', 'Rating_date']
+files = ["netflix/combined_data_1.txt", "netflix/combined_data_2.txt", "netflix/combined_data_3.txt", "netflix/combined_data_4.txt"]
+random_movies = pd.DataFrame()
+
+for k in files: # Se completa en unos 4-6 minutos
+    # TRATAMIENTO DE DATOS Y EXTRACCIÓN DE LOS DATOS DE 250 PELÍCULAS AL AZAR
+    # Lectura de archivos
+    data1 = pd.read_csv(k, delimiter = ",", encoding = "utf-8", names = colnames)
+    # Creación de la columna "filas"
+    data1 = data1.assign(filas = range(data1.shape[0]))
+    # Extracción de las filas donde figuran las códigos de las películas
+    data1_rm = data1[data1.ID_user.str.contains(":")]
+    # Creación de la columna "filas_rm"
+    data1_rm = data1_rm.assign(filas_rm = range(data1_rm.shape[0]))
+    # Eliminación de : en la columna ID_user de data1_rm
+    data1_rm['ID_user'] = data1_rm['ID_user'].str.replace(':', '')
+    # Almacenamiento en la lista IDs
+    IDs = list(data1_rm.ID_user)
+    # Recuento de valoraciones de cada película
+    reps = list(np.diff(data1_rm.filas))
+    reps.append(len(data1.filas) - max(data1_rm.filas))
+    # Va liberándose espacio en memoria para controlar el flujo.
+    del data1_rm
+    # Se crea un vector de repeticiones de los IDs de las películas
+    ID_film = np.repeat(IDs,reps)
+    del reps, IDs
+    # Se transforma en data frame de Pandas:
+    ID_film_df = pd.DataFrame(ID_film)
+    del ID_film
+    # Se numeran las filas del data frame:
+    ID_film_df.index = range(data1.shape[0])
+    # Se concatenan el data frame principal con el de repeticiones.
+    data1 = pd.concat([data1,ID_film_df], axis = 1, sort=False)
+    del ID_film_df
+    # Se limpian los NA (las filas con los ID de las películas) y la columna filas.
+    data1 = data1.dropna().drop(columns = ['filas'])
+    # Se renombran las columnas
+    data1.columns = ['ID_user', 'Score', 'Rating_date', 'ID_film']
+    # Se establece la semilla aleatoria
+    rd.seed(247177)
+    # Se extrae la muestra aleatoria de 250 películas
+    muestra_grupo = rd.sample(range(1,17770), 250)
+    # Y se transforma ID_film a entero.
+    data1.ID_film = data1.ID_film.astype(int)
+    # Se filtran las valoraciones cuyo ID_film coincide con un valor de la muestra.
+    data1 = data1[data1['ID_film'].isin(muestra_grupo)]
+    # Se concatenan el data frame fuera del bucle con la selección de esta vuelta.
+    random_movies = pd.concat([random_movies, data1], axis=0, sort = False)
+    del data1, muestra_grupo
+```
+
+Posteriormente se importa el archivo `movie_titles.csv` y se fusiona con la selección anterior utilizando el identificador numérico de la película como clave común.
+```{python fusion, cache=TRUE}
+# A continuación se pretende fusionar esta tabla con la de los títulos de las películas.
+del colnames, files
+# Se importa el archivo forzando 5 columnas.
+movie_titles = pd.read_csv("netflix/movie_titles.csv", delimiter = ",", encoding = "ISO-8859-1", names = ["ID_film", "Year", "Title1", "Title2", "Title3"])
+# Se sustituyen los NaN con "quitaesto"
+movie_titles.fillna('quitaesto', inplace = True)
+# Se encadenan los strings de las tres variables numeradas de Title en una nueva variable.
+movie_titles["Title"] = movie_titles["Title1"].str.cat(movie_titles["Title2"], sep = ", ").str.cat(movie_titles["Title3"], sep = ", ")
+# Se sustituyen los "quitaesto" por strings vacíos.
+movie_titles["Title"] = movie_titles["Title"].str.replace(', quitaesto', '')
+# Se eliminan las columnas innecesarias
+movie_titles = movie_titles.drop(columns = ['Title1', 'Title2', 'Title3'])
+movie_titles.index = movie_titles.ID_film
+# Se renombran las columnas para poder fusionar según ID_film.
+movie_titles.columns = ["ID", "Year", "Title"]
+random_movies.index = random_movies.index.astype(int)
+# Se fusionan las tablas movie_titles y random_movies.
+movie_resume = pd.merge(movie_titles, random_movies, on = 'ID_film', how = 'inner')
+del random_movies, movie_titles
+# Se acaba de limpiar la fusión.
+movie_resume = movie_resume.drop(columns=['ID'])
+```
+
+Por último, se exporta el resultado a un archivo `.csv`.
+```{python escritura, cache=TRUE}
+movie_resume.to_csv('netflix/model_netflix/movie_resume.csv')
+del movie_resume
+```
+
+
+# Segunda parte: Análisis exploratorio (EDA)
+
+## 1. Lectura y análisis preliminar de variables
+
+Recapitulando, se dispone de un _data set_ con las siguientes variables:
+
+* `ID_film` y `Title` son las variables de identificación de las películas. La primera es una cifra sin ningún valor numérico, no hace referencia a los IMDB reales. La segunda representa el título en formato _string_. Ambas deben tratarse como variables cualitativas politómicas nominales: permiten una identificación de un valor pero se excluye la posibilidad de ordenación.
+
+* `Year` contiene los años de estreno de las películas. Dependiendo del uso que quiera darse a la variable se considera como un factor o incluso un factor ordenado en base al tiempo. Sin embargo, también podría entenderse como una variable cuantitativa discreta: permite operar con sus valores pero no admite valores intermedios.
+
+* `ID_user` es la variable de identificación del usuario, una codificación anónima sin ningún valor numérico. Debería tratarse como una variable cualitativa politómica nominal.
+
+* `Score` representa las puntuaciones otorgadas por los usuarios a las películas, codificadas en enteros de 1 a 5, donde 1 representa la puntuación mínima (muy insatisfactoria en la escala de Likert), 3 una puntuación neutral y 5 la máxima (muy satisfactoria). Puede entenderse como un factor ordenado pero también como variable numérica, dependiendo del análisis que quiera efectuarse.
+
+* `Rating_date` contiene las fechas en que los usuarios puntuaron las películas. Es una variable de tipo fecha y, al igual que `Year` podría verse como factor, factor ordenado o variable cuantitativa discreta en la medida en que en su operatividad no admite valores intermedios y suele emplear escalas de razón.
+
+Teniendo en cuenta la abundancia de variables cualitativas, primero se carga el _data set_ y a continuación se transforman las variables que lo requieren.
+```{r lectura_2,include=FALSE}
+netflix <- read_csv("netflix/model_netflix/movie_resume.csv")
+str(netflix)
+```
+```{r transformacion}
+netflix$ID_film <- as.factor(netflix$ID_film)
+netflix$Title <- as.factor(netflix$Title) 
+netflix$ID_user <- as.factor(netflix$ID_user)
+```
+
+Cabe decir que la columna `X1` se corresponde con la numeración de las filas de Python y, como tal, es prescindible.
+```{r limpieza}
+netflix <- netflix %>%
+  select(-c("X1"))
+knitr::kable(head(netflix, 3),
+             caption='<font size="+2"><p style="color:black;"><b>Tabla 2: Datos estructurados</b></p></font>')
+```
+
+## 2. Distribución del número de películas por año
+
+```{r grupo_histograma}
+summ2 <- netflix %>% 
+  group_by(ID_film, Year) %>% 
+  summarise(count = n())
+```
+```{r dimensiones_histograma}
+n = sum(table(summ2$Year))
+#Regla de Scott
+As = sd(as.numeric(summ2$Year))*3.5*n^(-1/3)
+k = ceiling(diff(range(as.numeric(summ2$Year)))/As)
+A = ceiling(diff(range(summ2$Year))/k)
+L = min(summ2$Year)-1/2*0.1 + A*(0:k)
+```
+Se ha usado la Regla de Scott para determinar el número de clases (`r k`) y se han representado las observaciones en un histograma. En el eje de abscisas se representan los intervalos temporales y en el eje de ordenadas el número de estrenos.
+```{r histograma,fig.align="center"}
+ggplot(data = summ2) +
+  geom_histogram(aes(x = summ2$Year), 
+                 binwidth = A, 
+                 boundary = min(summ2$Year), 
+                 closed = c("right", "left"), 
+                 fill = "firebrick") +
+  stat_bin(aes(label = ..count.., x = summ2$Year), 
+           geom = "text", 
+           vjust = -.8, 
+           boundary = min(summ2$Year), 
+           binwidth = A, 
+           col = "forestgreen") +
+  theme(plot.background = element_rect(fill = "grey90", color = "grey90"),
+        panel.background = element_rect(fill = "white", color = "black"),
+        panel.grid = element_line(color = "grey"),
+        plot.title = element_text(color = "black", face = "bold", hjust=.5),
+        axis.text.x = element_text(color = "black"),
+        axis.text.y = element_text(color = "black"),
+        axis.title.x = element_text(color = "black", face = "bold"),
+        axis.title.y = element_text(color = "black", face = "bold")) +
+  scale_x_continuous(breaks = round(L, 0), minor_breaks = NULL) +
+  ylim(0,130) +
+  xlab("Año de estreno") +
+  ylab("Recuento") +
+  ggtitle("G1: Distribución de estrenos por año")
+```
+
+Como puede observarse, el número de estrenos es más abundante en los periodos más cercanos en el tiempo. Casi la mitad de las películas de la muestra son más o menos contemporáneas al periodo que abarcan las valoraciones de los usuarios.
+```{r limpieza_2}
+rm(A, As, k, L, n)
+```
+
+## 3. La librería `lubridate`
+```{r lubridate}
+#install.packages("lubridate")
+library(lubridate)
+```
+
+Esta librería permite la desagregación de la variable presente en formato fecha, `Rating_date`, en sus componentes año, mes, semana del año y también día de la semana. Con todo, se incorporan como nuevas variables a la base de datos para trabajar posteriormente con ellas.
+
+```{r variables_rating}
+netflix <- netflix %>% mutate(Rating_year = year(Rating_date),
+                            Rating_month = month(Rating_date, label=TRUE),
+                            Rating_week = week(Rating_date),
+                            Rating_wday = wday(Rating_date, label=TRUE))
+# Por comodidad, se rebautizan las categorías de las variables de mes y día de la semana.
+levels(netflix$Rating_wday) = 
+  c("domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado")
+levels(netflix$Rating_month) = 
+  c("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre")
+```
+
+## 4. Estadísticos principales
+
+Se resumen los estadísticos principales de la variable _Score_ por película. En concreto se recogen `count` (el número de valoraciones), `points` (el total de puntos acumulados), `mean` (la media aritmética de las valoraciones), `stdev` (su desviación típica), `mode` (la valoración más frecuente), `min` (la valoración mínima), `p25` (el primer cuartil de las valoraciones), `median` (la mediana o segundo cuartil), `p75` (el tercer cuartil de las valoraciones) y `max` (la valoración máxima).
+
+En la tabla figuran las 5 películas más populares.
+```{r estadisticos_principales}
+# Estadísticos principales por película
+summ4 <- netflix %>% 
+  group_by(Title) %>% 
+  summarise(count = n(),
+            points = sum(Score),
+            mean = round(mean(Score), 2),
+            stdev = round(sd(Score), 2),
+            mode = as.numeric(names(which(table(Score)==max(table(Score))))),
+            min = min(Score),
+            p25 = quantile(Score, .25),
+            median = median(Score),
+            p75 = quantile(Score, .75),
+            max = max(Score)) %>% 
+  arrange(desc(count))
+# Representación tabular
+knitr::kable(head(summ4, 5), align = rep('c', 11), 
+             caption = '<font size="+2"><p style="color:black;"><b>Tabla 3: Estadísticos principales</b></p></font>') %>%
+  column_spec(1, bold = T, color = "black", width = "10cm")
+```
+
+Cabe señalar que, entre las películas de la muestra, `r ifelse(nrow(summ4)-nrow(summ2)==0,"no hay","hay")` `r ifelse(nrow(summ4)-nrow(summ2)==0,"ninguna","alguna")` con varias modas.
+```{r limpieza_4}
+rm(summ2)
+```
+
+
+## 5. Distribución y estadísticos de las 5 películas más populares
+
+Se representan los estadísticos del apartado anterior para ilustrar la distribución de las valoraciones, por separado mediante histogramas y en conjunto con un boxplot. Asimismo, en este último, se ilustra también la media aritmética y el alcance de la desviación típica.
+```{r distribuciones_top5}
+# Filtrado de las observaciones de las 5 películas más populares
+summ5 <- netflix %>%
+  filter(Title %in% summ4$Title[1:5])
+```
+```{r funcion_sub_hist}
+# Se define una función que incluye todos los elementos comunes de los
+# histogramas. Así ahorramos código.
+# Los parámetros d y f se corresponden, respectivamente, con 
+# los datos de origen y el color del relleno.
+# Para ello, antes de nada, se define una serie de colores, uno por película
+# y uno adicional para usar en el boxplot:
+colores <- c("dodgerblue4", "gold", "firebrick", "darkorchid4", "darkorange2", "forestgreen")
+sub_hist <- function(d, f){
+  ggplot(data = d, aes(x = d$Score, y = stat(density))) +
+    geom_histogram(binwidth = 1, closed = c("right","left"), fill = f) +
+    stat_bin(aes(label = scales::percent(..density..), x = d$Score), 
+             bins = 5, 
+             geom = "text", 
+             vjust = -.8, 
+             col = colores[6], 
+             size = 2.5) +
+    theme(plot.background = element_rect(fill = "grey90", color = "grey90"),
+          panel.background = element_rect(fill = "white", color = "black"),
+          panel.grid.minor.x = element_line(color = "grey"),
+          panel.grid.minor.y = element_blank(),
+          panel.grid.major.y = element_line(color = "grey"),
+          panel.grid.major.x = element_blank(),
+          plot.title = element_text(color = "black", face = "bold", hjust = .5, size = 10),
+          axis.text.x = element_text(color = "black"),
+          axis.text.y = element_text(color = "black"),
+          axis.title = element_text(color = "black", face = "bold", hjust = .5)) +
+    scale_y_continuous(labels = scales::percent_format(accuracy = 1), 
+                       limits = c(0, .5)) +
+    ylab("Porcentaje") +
+    xlab("Score")
+}
+```
+```{r}
+# Asimismo, se define una función de filtrado de películas según posición
+# en summ4 que servirá para definir d y v en la función sub_hist.
+summ_hist <- function(i){
+  netflix %>%
+    filter(Title %in% summ4$Title[i])
+}
+```
+```{r boxplot}
+# Además, se pretende incluir un boxplot con la media y la desviación típica
+# superpuestas en forma de plot errorbar.
+summ5b <- summ5 %>% 
+  group_by(Title) %>%
+  summarise(mean = round(mean(Score), 2),
+            stdev = sd(Score))
+# Se codifica el boxplot.
+summ5_boxplot <- ggplot() +
+  geom_boxplot(data = summ5, 
+               aes(x = reorder(Title, Score, FUN=length), y = Score, fill = Title), 
+               varwidth = TRUE, 
+               show.legend = FALSE) +
+  theme(plot.background = element_rect(fill = "grey90", color = "grey90"),
+        panel.background = element_rect(fill = "white", color = "black"),
+        axis.text.x = element_text(color = "black"),
+        axis.text.y = element_blank(),
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_blank(),
+        plot.title = element_text(color = "black", face = "bold", hjust = .5, size=10),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  scale_fill_manual(values = colores) +
+  ggtitle("G7: Estadísticos del Top-5") +
+  geom_errorbar(data = summ5b, 
+                aes(x = Title, ymin = mean - stdev, ymax = mean + stdev), 
+                col = colores[6], 
+                width = .3, 
+                linetype = "dashed", 
+                size = .7) +
+  geom_point(data = summ5b, 
+             aes(x = Title, y = mean), 
+             size = 2, 
+             shape = 23, 
+             fill = colores[6], 
+             col = colores[6]) +
+  geom_text(data = summ5b, 
+            aes(label = mean, x = Title, y = mean), 
+            hjust = .5, 
+            vjust = -1.5, 
+            size = 2.5, 
+            col = colores[6]) +
+  coord_flip()
+```
+```{r libreria_cowplot}
+#install.packages("cowplot")
+library(cowplot) # Combinación de gráficos en filas y columnas
+```
+```{r grafico_combinado,fig.align="center"}
+plot_grid(
+  sub_hist(summ_hist(1), colores[3]) + 
+    theme(axis.title.x = element_blank(), plot.title = element_text(size = 8)) +
+    ggtitle("G2: Mystic\nRiver"),
+  sub_hist(summ_hist(2), colores[4]) + 
+    theme(axis.title = element_blank(), plot.title = element_text(size = 8)) +
+    ggtitle("G3: The Butterfly Effect:\nDirector's Cut"),
+  sub_hist(summ_hist(3), colores[1]) + 
+    theme(axis.title=element_blank(), plot.title = element_text(size = 8)) +
+    ggtitle("G4: Harry Potter\n and the Sorcerer's Stone"),
+  sub_hist(summ_hist(4), colores[2]) + 
+    ggtitle("G5: Love Actually"),
+  sub_hist(summ_hist(5), colores[5]) + 
+    theme(axis.title.y = element_blank()) + 
+    ggtitle("G6: X2: X-Men United"),
+  summ5_boxplot,
+  nrow=2)
+```
+```{r limpieza_5}
+rm(summ5, colores, sub_hist, summ_hist, summ5b, summ5_boxplot)
+```
+
+
+## 6. Distribución de las valoraciones por mes y día de la semana
+
+```{r valoracion_factor}
+# Recuento por día de la semana
+summ6a <- netflix %>% group_by(Rating_wday) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+# Recuento por mes del año
+summ6b <- netflix %>% group_by(Rating_month) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+```
+A partir de las variables generadas en el punto 3 se agrupan los datos, por día de la semana y, por separado, según mes del año. De acuerdo con los resultados, los días de la semana en que se valoran más películas son `r summ6a$Rating_wday[1]` y `r summ6a$Rating_wday[2]`. En cuanto a los meses del año, parece ser que los meses en que se emiten más valoraciones son `r summ6b$Rating_month[1]` y `r summ6b$Rating_month[2]`.
+
+Sirva para ilustrarlo este mapa de calor:
+
+```{r mapa_calor, fig.align="center"}
+netflix %>%
+  group_by(Rating_month, Rating_wday) %>%
+  summarise(Recuento = n()) %>% 
+  ggplot() +
+  geom_raster(aes(fill = Recuento, x = Rating_month, y = Rating_wday)) +
+  theme(plot.background = element_rect(fill = "grey90", color = "grey90"),
+        panel.background = element_rect(fill = "white", color = "black"),
+        plot.title = element_text(color = "black", face = "bold", hjust = .5),
+        axis.text.x = element_text(color = "black", angle = 90, vjust = .5, hjust = 1),
+        axis.text.y = element_text(color = "black"),
+        axis.title.x = element_text(face = "bold"),
+        axis.title.y = element_text(face = "bold"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        legend.background = element_rect(fill = "grey90")) +
+  xlab("Mes del año") +
+  ylab("Día de la semana") +
+  ggtitle("G8: Emisión de valoraciones") +
+  scale_fill_gradient2(high = "firebrick", guide = "colorbar")
+```
+
+Analizando las dos variables de manera conjunta se aprecia que los lunes y martes de agosto son los días en que se emiten más valoraciones. También se observa que los usuarios puntúan más películas durante el segundo semestre del año, en especial los primeros días laborables de la semana.
+```{r limpieza_6}
+rm(summ6a, summ6b)
+```
+
+
+## 7. Valoraciones por película y año
+
+Se pretende conocer las valoraciones por año que reciben las 10 películas más populares. Tras la agrupación de los datos por película y año de valoración se desagregan según esta última.
+```{r agrupacion_desagregacion}
+# Recuento por película y año de valoración
+summ7 <- netflix %>%
+  filter(Title %in% summ4$Title[1:10]) %>%
+  group_by(Title, Rating_year) %>%
+  summarise(Recuento = n()) %>% 
+  spread(Rating_year, Recuento)
+# Las películas de la lista estrenadas después de 1999 tendrán valores NA.
+# Se sustituyen por ceros.
+summ7[is.na(summ7)] <- 0
+```
+```{r top10_bonita}
+# Representación tabular
+knitr::kable(summ7, align = rep('c', 11), 
+             caption='<font size="+2"><p style="color:black;"><b>Tabla 4: Recuento anual de valoraciones de las 10 películas más populares</b></p></font>') %>%
+  column_spec(1, bold = T, color = "black", width = "10cm")
+```
+
+El gráfico **G9** presenta los resultados de la Tabla 4 de manera visual. Se percibe con claridad el incremento de la popularidad de _Netflix_ a partir del cambio de siglo, y especialmente desde 2002, año en el que empieza a cotizar en bolsa.
+```{r columnas_stack, fig.align="center"}
+# Se extrae la porción del dataset referente a las 10 películas
+summ7b <- netflix %>%
+  filter(Title %in% summ4$Title[1:10])
+summ7b$Rating_year = as.factor(summ7b$Rating_year)
+# Se representan en un gráfico de columnas
+ggplot(data = summ7b, 
+       aes(fill = Rating_year, x = reorder(Title, desc(Title)))) +
+  geom_bar(position = position_stack(reverse = TRUE)) +
+  theme(plot.background = element_rect(fill = "grey90", color = "grey90"),
+        panel.background = element_rect(fill = "white", color = "black"),
+        plot.title = element_text(color = "black", face = "bold", hjust = .5),
+        axis.text.x = element_text(color = "black", angle = 0, hjust = 1),
+        axis.text.y = element_text(color = "black", size = 7, angle = 45, hjust = 1, vjust = .5),
+        axis.title.x = element_text(color = "black", face = "bold"),
+        axis.title.y = element_text(color = "black", face = "bold"),
+        panel.grid.major.x = element_line(color = "grey"),
+        panel.grid.minor.x = element_line(color = "grey"),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        legend.background = element_rect(fill = "grey90")) +
+  scale_fill_discrete(name = "Año") +
+  xlab("Película") +
+  ylab("Recuento") +
+  ggtitle("G9: Recuento de las 10 películas más populares") +
+  coord_flip()
+```
+```{r limpieza_7}
+rm(summ7, summ7b)
+```
+
+
+## 8. Evolución del _score_ promedio de las 10 películas más populares
+
+```{r tema_comun}
+# Se define una estética común para ahorrar código.
+tema_comun <- theme(
+  plot.background = element_rect(fill = "grey90", color = "grey90"),
+  panel.background = element_rect(fill = "white", color = "black"),
+  plot.title = element_text(color = "black", face = "bold", hjust = .3),
+  axis.text.x = element_text(color = "black", angle = 90, size = 7, hjust = 1, vjust = .5),
+  axis.text.y = element_text(color = "black"),
+  axis.title.x = element_text(face = "bold"),
+  axis.title.y = element_text(face = "bold"),
+  panel.grid.major = element_line(color = "grey"),
+  panel.grid.minor = element_blank(),
+  legend.background = element_rect(fill = "grey90"))
+colores_2 <- c("forestgreen", "dodgerblue4", "gold", "coral4", "firebrick", "darkcyan", "darkorchid4", "deeppink2", "darkslategrey", "darkorange2")
+```
+```{r top10_promedio_sencillo}
+# Se agrupan los datos por título y año de valoración y se calcula la media 
+# de las valoraciones de cada película y año.
+summ8 <- netflix %>%
+  filter(Title %in% summ4$Title[1:10]) %>%
+  group_by(Title, Rating_year) %>%
+  summarise(mean = mean(Score)) %>%
+  rename(Pelicula = Title)
+# Se define el gráfico de líneas correspondiente
+plot8 <- ggplot(data = summ8, 
+                aes(x = Rating_year, y = mean, color = Pelicula)) +
+  geom_line(linetype = 1, size = .75, alpha = .5) +
+  geom_point() +
+  tema_comun +
+  scale_x_continuous(breaks = min(summ8$Rating_year):max(summ8$Rating_year)) +
+  scale_color_manual(values = colores_2) +
+  xlab("Año") +
+  ylab("Media") +
+  ggtitle("G10 y G11: Evolución del score promedio\n de las 10 películas más populares")
+```
+```{r top10_promedio_acumulado}
+# Se agrupan los datos por título y fecha de valoración y se calcula la media
+# aritmética acumulada en cada fecha de cada película.
+summ8c <- netflix %>%
+  filter(Title %in% summ4$Title[1:10]) %>%
+  arrange(Title, Rating_date) %>%
+  group_by(Title) %>%
+  summarise(cum_mean = cummean(Score),
+            Rating_date = Rating_date)
+# Se define el gráfico de líneas correspondiente
+```
+```{r}
+
+plot8c <- ggplot(data = summ8c, 
+                 aes(x = Rating_date, y = cum_mean, color = Title)) +
+  geom_line(linetype = 1, size = .75, alpha=.5) +
+  tema_comun +
+  scale_x_date(breaks = "6 months") +
+  scale_color_manual(values = colores_2) +
+  xlab("Fecha") +
+  ylab("Media acumulada")
+```
+Quiere estudiarse la evolución del promedio de las valoraciones de las 10 películas más populares. Para ello se extrae la media de los datos por película y año de valoración y se representan en un gráfico de líneas. A continuación se hace lo propio con la media acumulada para cada día del rango temporal estudiado con el fin de ilustrar la posición de la media aritmética en cada momento del tiempo.
+```{r fig.align="center",echo=FALSE}
+# Se representan ambos gráficos, ahorrando una leyenda
+plot8
+plot8c + theme(legend.position = "none")
+```
+
+Se aprecia que el _score_ de la mayoría de películas representadas se sitúa entre valores cercanos a 3 y 4. Solamente el de _`r summ4$Title[3]`_ se encuentra por encima de 4 al final del periodo estudiado.
+```{r limpieza_8}
+rm(tema_comun, colores_2, summ8, summ4, plot8, summ8c, plot8c)
+```
+
+
+## 9. Similitud coseno para los usuarios más activos
+
+En este último apartado se pretenden estudiar superficialmente las características de los usuarios más involucrados en la emisión de valoraciones (se contemplan aquellos que han puntuado más de 75 películas). Para ello se explota la información implícita en las valoraciones de las películas. En concreto, se desea generar una medida de similaridad entre usuarios basada en sus gustos que, en un grado de desarrollo mayor, podría ser la semilla de un sistema de recomendación de películas.
+
+La medida de similaridad escogida es la **similitud coseno** que, para cada par _i, k_ de vectores de valoraciones ($t$ y $u$) de las películas en la base de datos, cumple:
+
+$$\cos(v)_{i,k}=\frac{\sum_{i,k=1}^n t_i\cdot u_k}{\sqrt{\sum_{i=1}^n t_i^2}\cdot \sqrt{\sum_{k=1}^n u_k^2}}$$
+
+Los valores $\cos(v)_{i,k}$ generados se almacenan en una matriz cuadrada, ocupando las posiciones _i, k_ para luego representarse en un mapa de calor con un dendrograma integrado que agrupa a los usuarios según su grado de semejanza. Valores más altos de $\cos(v)_{i,k}$ representan similitudes más elevadas.
+
+```{r preparacion_datos,include=FALSE}
+# Se filtran los ID de usuario que han valorado más de 75 películas 
+summ9 <- netflix %>%
+  group_by(ID_user) %>%
+  summarise(Recuento = n()) %>%
+  filter(Recuento > 75)
+# Se almacenan los ID en un vector (y se eliminan los factores vacíos)
+summ9ID <- summ9$ID_user
+droplevels(summ9ID)
+# Se filtran, sobre el data set original, las valoraciones de los usuarios
+# seleccionados y se expande la agrupación en función de ID_film.
+summ9m <- netflix %>%
+  filter(ID_user %in% summ9$ID_user) %>%
+  group_by(ID_user, Score) %>%
+  summarise(ID_film = ID_film) %>%
+  spread(ID_film, Score) %>% 
+  remove_rownames %>% # Se convierte la variable ID_user en el nombre de las filas
+  column_to_rownames(var = "ID_user")
+# Se sustituyen los valores NA por 0.
+summ9m[is.na(summ9m)] <- 0
+# Se genera una matriz cuadrada con el número de filas de summ9m
+summ9matrix <- diag(x = 1, nrow = nrow(summ9m))
+# Y se rebautizan los nombres de las filas y las columnas
+rownames(summ9matrix) <- summ9ID
+colnames(summ9matrix) <- summ9ID
+# Se calculan los valores de similaridad coseno de los pares con un bucle
+for (i in summ9ID){ # Tarda unos pocos minutos
+  for (k in summ9ID){
+    summ9matrix[i,k]=sum(summ9m[i,]*summ9m[k,])/(sqrt(sum(summ9m[i,]^2))*sqrt(sum(summ9m[k,]^2)))
+  }
+}
+# Se sustituyen los 1 de la diagonal principal por NA para mejorar su posterior
+# visualización
+summ9matrix[round(summ9matrix, 1)==1] <- NA
+```
+```{r grid_y_pheatmap}
+#install.packages("pheatmap")
+#install.packages("grid")
+library(pheatmap)
+library(grid)
+```
+```{r mapa_calor_usuarios, fig.align="center"}
+# Se recomienda ejecutar todas las líneas al mismo tiempo:
+mapa_calor <- pheatmap(summ9matrix, 
+                       fontsize = 11, 
+                       fontsize_row = 6, 
+                       fontsize_col = 6, 
+                       main="G12: Mapa de calor y dendrograma para ID_user")
+mapa_calor$gtable$grobs[[6]]$children[[2]]$gp <- gpar(fontsize = 5)
+grid.draw(rectGrob(gp = gpar(fill = "grey90", col = "grey90")))
+grid.draw(mapa_calor)
+```
+```{r limpieza_final}
+rm(list=ls())
+```
+
